@@ -42,6 +42,13 @@
 namespace colmap {
 
 template <typename T>
+T SafeMin(const T& a, const T& b) {
+    return a < b ? a : b;
+}
+
+
+
+template <typename T>
 using EigenVector3Map = Eigen::Map<const Eigen::Matrix<T, 3, 1>>;
 template <typename T>
 using EigenQuaternionMap = Eigen::Map<const Eigen::Quaternion<T>>;
@@ -76,13 +83,17 @@ class ReprojErrorCostFunction {
         EigenQuaternionMap<T>(cam_from_world_rotation) *
             EigenVector3Map<T>(point3D) +
         EigenVector3Map<T>(cam_from_world_translation);
+      
     CameraModel::ImgFromCam(camera_params,
                             point3D_in_cam[0],
                             point3D_in_cam[1],
                             point3D_in_cam[2],
                             &residuals[0],
                             &residuals[1]);
-    residuals[0] -= T(observed_x_);
+        const T c1 = camera_params[1];
+        residuals[0] = SafeMin(
+        ceres::abs(residuals[0] - T(observed_x_)),
+        ceres::abs(ceres::abs(residuals[0] - T(observed_x_)) - c1 * T(2)));
     residuals[1] -= T(observed_y_);
     return true;
   }

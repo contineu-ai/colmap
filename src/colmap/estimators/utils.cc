@@ -100,9 +100,10 @@ void ComputeSquaredReprojectionError(
     const Eigen::Vector3d point3D_in_cam =
         cam_from_world * points3D[i].homogeneous();
     // Check if 3D point is in front of camera.
-    if (point3D_in_cam.z() > std::numeric_limits<double>::epsilon()) {
+    if (abs(point3D_in_cam.z()) > std::numeric_limits<double>::epsilon()) {
       (*residuals)[i] =
           (point3D_in_cam.hnormalized() - points2D[i]).squaredNorm();
+          // LOG(INFO) << "[DEBUG] point3d norm: " << point3D_in_cam.hnormalized() << " point2d " << points2D[i];
     } else {
       (*residuals)[i] = std::numeric_limits<double>::max();
     }
