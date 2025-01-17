@@ -74,13 +74,13 @@ class IncrementalMapper {
     double init_max_forward_motion = 0.95;
 
     // Minimum triangulation angle for initial image pair.
-    double init_min_tri_angle = 16.0;
+    double init_min_tri_angle = 8;
 
     // Maximum number of trials to use an image for initialization.
     int init_max_reg_trials = 2;
 
     // Maximum reprojection error in absolute pose estimation.
-    double abs_pose_max_error = 8;
+    double abs_pose_max_error = 25;
 
     // Minimum number of inliers in absolute pose estimation.
     int abs_pose_min_num_inliers = 50;
