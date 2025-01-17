@@ -504,10 +504,9 @@ bool IncrementalMapper::RegisterNextImage(const Options& options,
       LOG(INFO) << "[DEBUG] Image " << image_id << " failed to EstimateAbsolutePose";
     return false;
   }
-// removing num_inliers check
   if (num_inliers < static_cast<size_t>(options.abs_pose_min_num_inliers)) {
     LOG(INFO) << "[DEBUG] Image " << image_id << " has too few num_inliers: " << num_inliers;
-    // return false;
+    return false;
   }
 
   //////////////////////////////////////////////////////////////////////////////

@@ -80,19 +80,19 @@ class IncrementalMapper {
     int init_max_reg_trials = 2;
 
     // Maximum reprojection error in absolute pose estimation.
-    double abs_pose_max_error = 12.0;
+    double abs_pose_max_error = 8;
 
     // Minimum number of inliers in absolute pose estimation.
-    int abs_pose_min_num_inliers = 30;
+    int abs_pose_min_num_inliers = 50;
 
     // Minimum inlier ratio in absolute pose estimation.
     double abs_pose_min_inlier_ratio = 0.25;
 
     // Whether to estimate the focal length in absolute pose estimation.
-    bool abs_pose_refine_focal_length = true;
+    bool abs_pose_refine_focal_length = false;
 
     // Whether to estimate the extra parameters in absolute pose estimation.
-    bool abs_pose_refine_extra_params = true;
+    bool abs_pose_refine_extra_params = false;
 
     // Number of images to optimize in local bundle adjustment.
     int local_ba_num_images = 6;
