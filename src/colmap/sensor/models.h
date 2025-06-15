@@ -359,11 +359,25 @@ struct RadialFisheyeCameraModel
 //Spherical camera module for 360 degree images, equirectangular projection
 //Parameter list is expected in the following order:
 //    fx, fy, cx, cy
-struct SphericalCameraModel
-    : public BaseCameraModel<SphericalCameraModel> {
-  CAMERA_MODEL_DEFINITIONS(
-      CameraModelId::kSpherical, "SPHERICAL", 1, 2, 0)
+struct SphericalCameraModel : public BaseCameraModel<SphericalCameraModel> {
+  // Model definition with 0 focal params, 2 principal point params.
+  CAMERA_MODEL_DEFINITIONS(CameraModelId::kSpherical, "SPHERICAL", 0, 2, 0)
+
+  // This is the function that was causing the error.
+  // We have moved its entire implementation INSIDE the struct.
+  // This correctly overrides the default behavior from BaseCameraModel.
+  template <typename T>
+  static T CamFromImgThreshold(const T* params, const T threshold) {
+    const T cx = params[0];
+    // Image width is approximately 2 * cx.
+    // The full width corresponds to an angle of 2 * PI radians.
+    // The angular size of one pixel is approximately (2 * PI) / (2 * cx) = PI / cx.
+    // We return the threshold scaled by this angular size.
+    return threshold * M_PI / cx;
+  }
 };
+
+
 
 // Camera model with radial and tangential distortion coefficients and
 // additional coefficients accounting for thin-prism distortion.
@@ -579,38 +593,53 @@ template <typename T>
 void BaseCameraModel<CameraModel>::IterativeUndistortion(const T* params,
                                                          T* u,
                                                          T* v) {
-  // Parameters for Newton iteration using numerical differentiation with
-  // central differences, 100 iterations should be enough even for complex
-  // camera models with higher order terms.
-  const size_t kNumIterations = 100;
-  const double kMaxStepNorm = 1e-10;
-  const double kRelStepSize = 1e-6;
+  // Parameters for Newton iteration.
+  const int kNumIterations = 100;
+  const T kMaxStepNorm = T(1e-10);
+  const T kRelStepSize = T(1e-6);
+  const T kEpsilon = T(std::numeric_limits<double>::epsilon());
 
-  Eigen::Matrix2d J;
-  const Eigen::Vector2d x0(*u, *v);
-  Eigen::Vector2d x(*u, *v);
-  Eigen::Vector2d dx;
-  Eigen::Vector2d dx_0b;
-  Eigen::Vector2d dx_0f;
-  Eigen::Vector2d dx_1b;
-  Eigen::Vector2d dx_1f;
+  // Use Eigen vectors of the template type T.
+  Eigen::Matrix<T, 2, 2> J;
+  Eigen::Matrix<T, 2, 1> x0(*u, *v);
+  Eigen::Matrix<T, 2, 1> x(*u, *v);
+  Eigen::Matrix<T, 2, 1> dx;
+  Eigen::Matrix<T, 2, 1> dx_0b;
+  Eigen::Matrix<T, 2, 1> dx_0f;
+  Eigen::Matrix<T, 2, 1> dx_1b;
+  Eigen::Matrix<T, 2, 1> dx_1f;
 
-  for (size_t i = 0; i < kNumIterations; ++i) {
-    const double step0 = std::max(std::numeric_limits<double>::epsilon(),
-                                  std::abs(kRelStepSize * x(0)));
-    const double step1 = std::max(std::numeric_limits<double>::epsilon(),
-                                  std::abs(kRelStepSize * x(1)));
+  for (int i = 0; i < kNumIterations; ++i) {
+    // *** FIX: Use ternary operator for max() ***
+    // This is equivalent to ceres::max() but works on all Ceres versions.
+    const T abs_x0 = x(0) > T(0.0) ? x(0) : -x(0);
+    const T abs_x1 = x(1) > T(0.0) ? x(1) : -x(1);
+    
+    const T step0_val = kRelStepSize * abs_x0;
+    const T step1_val = kRelStepSize * abs_x1;
+
+    const T step0 = step0_val > kEpsilon ? step0_val : kEpsilon;
+    const T step1 = step1_val > kEpsilon ? step1_val : kEpsilon;
+
     CameraModel::Distortion(params, x(0), x(1), &dx(0), &dx(1));
-    CameraModel::Distortion(params, x(0) - step0, x(1), &dx_0b(0), &dx_0b(1));
-    CameraModel::Distortion(params, x(0) + step0, x(1), &dx_0f(0), &dx_0f(1));
-    CameraModel::Distortion(params, x(0), x(1) - step1, &dx_1b(0), &dx_1b(1));
-    CameraModel::Distortion(params, x(0), x(1) + step1, &dx_1f(0), &dx_1f(1));
-    J(0, 0) = 1 + (dx_0f(0) - dx_0b(0)) / (2 * step0);
-    J(0, 1) = (dx_1f(0) - dx_1b(0)) / (2 * step1);
-    J(1, 0) = (dx_0f(1) - dx_0b(1)) / (2 * step0);
-    J(1, 1) = 1 + (dx_1f(1) - dx_1b(1)) / (2 * step1);
-    const Eigen::Vector2d step_x = J.partialPivLu().solve(x + dx - x0);
+    CameraModel::Distortion(
+        params, x(0) - step0, x(1), &dx_0b(0), &dx_0b(1));
+    CameraModel::Distortion(
+        params, x(0) + step0, x(1), &dx_0f(0), &dx_0f(1));
+    CameraModel::Distortion(
+        params, x(0), x(1) - step1, &dx_1b(0), &dx_1b(1));
+    CameraModel::Distortion(
+        params, x(0), x(1) + step1, &dx_1f(0), &dx_1f(1));
+
+    J(0, 0) = T(1.0) + (dx_0f(0) - dx_0b(0)) / (T(2.0) * step0);
+    J(0, 1) = (dx_1f(0) - dx_1b(0)) / (T(2.0) * step1);
+    J(1, 0) = (dx_0f(1) - dx_0b(1)) / (T(2.0) * step0);
+    J(1, 1) = T(1.0) + (dx_1f(1) - dx_1b(1)) / (T(2.0) * step1);
+
+    const Eigen::Matrix<T, 2, 1> step_x = J.partialPivLu().solve(x + dx - x0);
     x -= step_x;
+
+    // Use squaredNorm() which is available for Eigen::Matrix<T, ...>
     if (step_x.squaredNorm() < kMaxStepNorm) {
       break;
     }
@@ -619,7 +648,6 @@ void BaseCameraModel<CameraModel>::IterativeUndistortion(const T* params,
   *u = x(0);
   *v = x(1);
 }
-
 ////////////////////////////////////////////////////////////////////////////////
 // SimplePinholeCameraModel
 
@@ -667,7 +695,7 @@ void SimplePinholeCameraModel::CamFromImg(
 
   *u = (x - c1) / f;
   *v = (y - c2) / f;
-  *w = 1;
+  *w = T(1.0);;
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -719,7 +747,7 @@ void PinholeCameraModel::CamFromImg(
 
   *u = (x - c1) / f1;
   *v = (y - c2) / f2;
-  *w = 1;
+  *w = T(1.0);;
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -777,7 +805,7 @@ void SimpleRadialCameraModel::CamFromImg(
   // Lift points to normalized plane
   *u = (x - c1) / f;
   *v = (y - c2) / f;
-  *w = 1;
+  *w = T(1.0);;
 
   IterativeUndistortion(&params[3], u, v);
 }
@@ -849,7 +877,7 @@ void RadialCameraModel::CamFromImg(
   // Lift points to normalized plane
   *u = (x - c1) / f;
   *v = (y - c2) / f;
-  *w = 1;
+  *w = T(1.0);;
 
   IterativeUndistortion(&params[3], u, v);
 }
@@ -924,7 +952,7 @@ void OpenCVCameraModel::CamFromImg(
   // Lift points to normalized plane
   *u = (x - c1) / f1;
   *v = (y - c2) / f2;
-  *w = 1;
+  *w = T(1.0);;
 
   IterativeUndistortion(&params[4], u, v);
 }
@@ -1003,7 +1031,7 @@ void OpenCVFisheyeCameraModel::CamFromImg(
   // Lift points to normalized plane
   *u = (x - c1) / f1;
   *v = (y - c2) / f2;
-  *w = 1;
+  *w = T(1.0);;
 
   IterativeUndistortion(&params[4], u, v);
 }
@@ -1102,7 +1130,7 @@ void FullOpenCVCameraModel::CamFromImg(
   // Lift points to normalized plane
   *u = (x - c1) / f1;
   *v = (y - c2) / f2;
-  *w = 1;
+  *w = T(1.0);;
 
   IterativeUndistortion(&params[4], u, v);
 }
@@ -1185,7 +1213,7 @@ void FOVCameraModel::CamFromImg(
   // Lift points to normalized plane
   const T uu = (x - c1) / f1;
   const T vv = (y - c2) / f2;
-  *w = 1;
+  *w = T(1.0);;
 
   // Undistortion
   Undistortion(&params[4], uu, vv, u, v);
@@ -1325,7 +1353,7 @@ void SimpleRadialFisheyeCameraModel::CamFromImg(
   // Lift points to normalized plane
   *u = (x - c1) / f;
   *v = (y - c2) / f;
-  *w = 1;
+  *w = T(1.0);;
 
   IterativeUndistortion(&params[3], u, v);
 }
@@ -1404,7 +1432,7 @@ void RadialFisheyeCameraModel::CamFromImg(
   // Lift points to normalized plane
   *u = (x - c1) / f;
   *v = (y - c2) / f;
-  *w = 1;
+  *w = T(1.0);;
 
   IterativeUndistortion(&params[3], u, v);
 }
@@ -1430,76 +1458,132 @@ void RadialFisheyeCameraModel::Distortion(
   }
 }
 
+
 ////////////////////////////////////////////////////////////////////////////////
-//SphericalCameraModel equirectangular projection
-//  - `ImgFromCam`: transform normalized camera coordinates to image
-//    coordinates (the inverse of `CamFromImg`). Assumes that the camera
-//    coordinates are given as (u, v, 1).
-//  - `CamFromImg`: transform image coordinates to normalized camera
-//    coordinates (the inverse of `ImgFromCam`). Produces camera coordinates
-//    as (u, v, 1).
+// SphericalCameraModel
+
+// Returns "cx, cy"
 std::string SphericalCameraModel::InitializeParamsInfo() {
-  return "f, cx, cy";
+  return "cx, cy";
 }
 
-std::array<size_t, 1> SphericalCameraModel::InitializeFocalLengthIdxs() {
-  return {0};
+// The model has no focal length parameters.
+std::array<size_t, 0> SphericalCameraModel::InitializeFocalLengthIdxs() {
+  return {};
 }
 
+// The principal point parameters are at indices 0 and 1.
 std::array<size_t, 2> SphericalCameraModel::InitializePrincipalPointIdxs() {
-  return {1, 2};
+  return {0, 1};
 }
 
+// The model has no extra distortion parameters.
 std::array<size_t, 0> SphericalCameraModel::InitializeExtraParamsIdxs() {
   return {};
 }
 
+// Initializes the parameters to the image center. The focal_length argument
+// is required by the function signature but is ignored.
 std::vector<double> SphericalCameraModel::InitializeParams(
     const double focal_length, const size_t width, const size_t height) {
-  return {focal_length, width / 2.0, height / 2.0};
+  return {width / 2.0, height / 2.0};
 }
+
+// Projects a 3D point in the camera coordinate system to 2D pixel coordinates.
+//  - (u, v, w) is a 3D direction vector. Its magnitude does not matter.
+//  - (x, y) are the resulting pixel coordinates.
+// In src/colmap/sensor/models.h
+
+// ... inside the file, find and replace this specific function ...
+
+// In src/colmap/sensor/models.h
 
 template <typename T>
 void SphericalCameraModel::ImgFromCam(
     const T* params, T u, T v, T w, T* x, T* y) {
-  // std::cout<<"[DEBUG] SPHERICAL CAMERA MODEL"<<std::endl;
-  const T c1 = params[1];
-  const T c2 = params[2];
-  // std::cout<<"[DEBUG] (x,y) c1: "<<c1<<" c2: "<<c2<<std::endl;
-  // std::cout<<"[DEBUG] inpt u: "<<u<<" v: "<<v<<" w: "<<w<<std::endl;
+  const T cx = params[0];
+  const T cy = params[1];
+
+  // *** START OF NEW FIX ***
+  // Ensure all constants are of the correct template type `T` to avoid
+  // any potential issues with mixed-type arithmetic (Jet vs double).
+  const T kPi = T(M_PI);
+  const T kTwo = T(2.0);
+  const T kOne = T(1.0);
+  const T kEpsilon = T(std::numeric_limits<double>::epsilon());
+  // *** END OF NEW FIX ***
+
   const T r = ceres::sqrt(u * u + v * v + w * w);
-  u /= r;
-  v /= r;
-  w /= r;
-  // std::cout<<"[DEBUG] (u,v,w) u: "<<u<<" v: "<<v<<" w: "<<w<<std::endl;
-  const T theta = ceres::atan2(u, w);
-  const T phi = ceres::asin(v);
-  // std::cout<<"[DEBUG] (u,v,w) theta: "<<theta<<" phi: " <<phi<<std::endl;
-  *x = c1 + theta*c1/M_PI;
-  *y = c2 + T(2)*phi*c2/M_PI;
-  // std::cout<<"[DEBUG] out x: "<<*x<<" y: "<<*y<<std::endl;
+
+  // Handle the case where the point is at the camera's center (origin).
+  if (r < kEpsilon) {
+    *x = cx;
+    *y = cy;
+    return;
+  }
+
+  const T inv_r = kOne / r;
+  u *= inv_r;
+  v *= inv_r;
+  w *= inv_r;
+
+  // Clamp 'v' to the valid range [-1, 1] for asin, using the ternary operator.
+  const T v_safe = v < kOne ? (v > -kOne ? v : -kOne) : kOne;
+  const T phi = ceres::asin(v_safe);
+
+  T theta;
+  // Handle the pole case for atan2.
+  const T xz_hypot = ceres::sqrt(u * u + w * w);
+  if (xz_hypot < kEpsilon) {
+    theta = T(0.0);
+  } else {
+    theta = ceres::atan2(u, w);
+  }
+
+  // Map angles to pixel coordinates using correctly-typed constants.
+  *x = cx * (kOne + theta / kPi);
+  *y = cy * (kOne + phi / (kPi / kTwo));
 }
+// Back-projects a 2D pixel coordinate to a 3D direction vector on the unit sphere.
+//  - (x, y) are the input pixel coordinates.
+//  - (u, v, w) is the resulting 3D direction vector (normalized to unit length).
+// In src/colmap/sensor/models.h
 
 template <typename T>
 void SphericalCameraModel::CamFromImg(
     const T* params, const T x, const T y, T* u, T* v, T* w) {
-  // std::cout<<"[DEBUG] SPHERICAL CAMERA MODEL"<<std::endl;
-  // std::cout<<"[DEBUG] (x,y) PI: "<<PI<<std::endl;
+  const T cx = params[0];
+  const T cy = params[1];
 
-  const T c1 = params[1];
-  const T c2 = params[2];
-  // std::cout<<"[DEBUG] (x,y) c1: "<<c1<<" c2: "<<c2<<std::endl;
-  // std::cout<<"[DEBUG] inpt x: "<<x<<" y: "<<y<<std::endl;
-  // Lift points to normalized plane
-  const T theta = (x - c1)*M_PI/c1;
-  const T phi = (y - c2)*M_PI/(T(2)*c2);
-  // std::cout<<"[DEBUG] (x,y) theta: "<<theta<<" phi: " <<phi<<std::endl;
+  // *** START OF ROBUSTNESS FIX ***
+  // Ensure all constants are of the correct template type `T`.
+  const T kPi = T(M_PI);
+  const T kTwo = T(2.0);
+  const T kOne = T(1.0);
+  const T kEpsilon = T(std::numeric_limits<double>::epsilon());
 
-  *u = ceres::cos(phi)*ceres::sin(theta);
+  // Avoid division by zero if cx or cy are at or near zero.
+  // If so, we can't determine a direction, so return a default (e.g., forward).
+  if (ceres::abs(cx) < kEpsilon || ceres::abs(cy) < kEpsilon) {
+    *u = T(0.0);
+    *v = T(0.0);
+    *w = T(1.0);
+    return;
+  }
+  // *** END OF ROBUSTNESS FIX ***
+
+  // Map pixel coordinates back to angles using correctly-typed constants.
+  const T theta = kPi * (x / cx - kOne);
+  const T phi = (kPi / kTwo) * (y / cy - kOne);
+
+  // Convert spherical angles to a 3D direction vector.
+  const T cos_phi = ceres::cos(phi);
+  *u = cos_phi * ceres::sin(theta);
   *v = ceres::sin(phi);
-  *w = ceres::cos(phi)*ceres::cos(theta);
-  // std::cout<<"[DEBUG] out u: "<<*u<<" v: "<<*v<<" w: "<<*w<<std::endl;
+  *w = cos_phi * ceres::cos(theta);
 }
+
+
 ////////////////////////////////////////////////////////////////////////////////
 // ThinPrismFisheyeCameraModel
 
@@ -1581,7 +1665,7 @@ void ThinPrismFisheyeCameraModel::CamFromImg(
   // Lift points to normalized plane
   *u = (x - c1) / f1;
   *v = (y - c2) / f2;
-  *w = 1;
+  *w = T(1.0);;
 
   IterativeUndistortion(&params[4], u, v);
 
