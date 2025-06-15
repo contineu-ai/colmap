@@ -56,36 +56,56 @@ class ReprojErrorCostFunction {
       : observed_x_(point2D(0)), observed_y_(point2D(1)) {}
 
   static ceres::CostFunction* Create(const Eigen::Vector2d& point2D) {
-    return (
-        new ceres::AutoDiffCostFunction<ReprojErrorCostFunction<CameraModel>,
-                                        2,
-                                        4,
-                                        3,
-                                        3,
-                                        CameraModel::num_params>(
-            new ReprojErrorCostFunction(point2D)));
+    return new ceres::AutoDiffCostFunction<
+        ReprojErrorCostFunction<CameraModel>,
+        3,                       // number of residuals
+        4,                       // cam rotation (quaternion)
+        3,                       // cam translation
+        3,                       // 3D point
+        CameraModel::num_params  // camera intrinsics
+    >(new ReprojErrorCostFunction(point2D));
   }
 
-  template <typename T>
-  bool operator()(const T* const cam_from_world_rotation,
-                  const T* const cam_from_world_translation,
-                  const T* const point3D,
-                  const T* const camera_params,
-                  T* residuals) const {
-    const Eigen::Matrix<T, 3, 1> point3D_in_cam =
-        EigenQuaternionMap<T>(cam_from_world_rotation) *
-            EigenVector3Map<T>(point3D) +
-        EigenVector3Map<T>(cam_from_world_translation);
-    CameraModel::ImgFromCam(camera_params,
-                            point3D_in_cam[0],
-                            point3D_in_cam[1],
-                            point3D_in_cam[2],
-                            &residuals[0],
-                            &residuals[1]);
-    residuals[0] -= T(observed_x_);
-    residuals[1] -= T(observed_y_);
+template <typename T>
+bool operator()(const T* const cam_rot,
+                const T* const cam_trans,
+                const T* const point3D,
+                const T* const cam_params,
+                T* residuals) const {
+    // 1) Transform the 3D point into the camera's coordinate system.
+    Eigen::Map<const Eigen::Quaternion<T>> q_cam(cam_rot);
+    Eigen::Map<const Eigen::Matrix<T,3,1>> t_cam(cam_trans);
+    Eigen::Map<const Eigen::Matrix<T,3,1>> P_w(point3D);
+    Eigen::Matrix<T,3,1> P_c = q_cam * P_w + t_cam;
+
+    // 2) The predicted bearing vector IS the normalized 3D point in the camera frame.
+    const T pred_norm = P_c.norm();
+    
+    // Handle the case where the predicted point is at the camera center.
+    if (pred_norm < T(std::numeric_limits<double>::epsilon())) {
+        residuals[0] = T(0);
+        residuals[1] = T(0);
+        // The original had a 3D residual, so we keep it 3D.
+        residuals[2] = T(0); 
+        return true;
+    }
+    const Eigen::Matrix<T,3,1> b_pred = P_c / pred_norm;
+
+    // 3) Compute the observed bearing vector using our robust CamFromImg function.
+    Eigen::Matrix<T,3,1> b_obs;
+    CameraModel::CamFromImg(cam_params,
+                            T(observed_x_), T(observed_y_),
+                            &b_obs[0], &b_obs[1], &b_obs[2]);
+    // Note: CamFromImg should already produce a normalized vector.
+
+    // 4) The residual is the difference between the two 3D bearing vectors.
+    // This is a geometrically sound error metric for spherical cameras.
+    residuals[0] = b_pred[0] - b_obs[0];
+    residuals[1] = b_pred[1] - b_obs[1];
+    residuals[2] = b_pred[2] - b_obs[2];
+    
     return true;
-  }
+}
 
  private:
   const double observed_x_;
@@ -108,7 +128,7 @@ class ReprojErrorConstantPoseCostFunction
                                      const Eigen::Vector2d& point2D) {
     return (new ceres::AutoDiffCostFunction<
             ReprojErrorConstantPoseCostFunction<CameraModel>,
-            2,
+            3,
             3,
             CameraModel::num_params>(
         new ReprojErrorConstantPoseCostFunction(cam_from_world, point2D)));
@@ -152,7 +172,7 @@ class ReprojErrorConstantPoint3DCostFunction
                                      const Eigen::Vector3d& point3D) {
     return (new ceres::AutoDiffCostFunction<
             ReprojErrorConstantPoint3DCostFunction<CameraModel>,
-            2,
+            3,
             4,
             3,
             CameraModel::num_params>(
